@@ -7,6 +7,10 @@
 #include "util.h"
 #include "net.h"
 
+/*
+ * NOTE: if you want to add/delete the entries after net_run(),
+ *       you need to protect these lists with a lock.
+ */
 static struct net_device *devices;
 
 struct net_device *
