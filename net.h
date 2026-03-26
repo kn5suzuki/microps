@@ -23,6 +23,11 @@
 #define NET_DEVICE_IS_UP(x) ((x)->flags & NET_DEVICE_FLAG_UP)
 #define NET_DEVICE_STATE(x) (NET_DEVICE_IS_UP(x) ? "UP" : "DOWN")
 
+#define NET_IFACE_FAMILY_IP 1
+#define NET_IFACE_FAMIRY_IPV6 2
+
+#define NET_IFACE(x) ((struct net_iface *)(x))
+
 /*
  * NOTE: use same value as the Ethernet types
  */
@@ -33,6 +38,7 @@
 struct net_device
 {
     struct net_device *next;
+    struct net_iface *ifaces;
     unsigned int index;
     char name[IFNAMSIZ];
     uint16_t type;
@@ -53,6 +59,14 @@ struct net_device_ops
     int (*output)(struct net_device *dev, uint16_t type, const uint8_t *data, size_t len, const void *dst);
 };
 
+struct net_iface
+{
+    struct net_iface *next;
+    struct net_device *dev;
+    int family;
+    /* depends on implementation of protocols. */
+};
+
 typedef void (*net_protocol_handler_t)(const uint8_t *data, size_t len, struct net_device *dev);
 
 extern struct net_device *
@@ -61,6 +75,10 @@ extern int
 net_device_register(struct net_device *dev);
 extern int
 net_device_output(struct net_device *dev, uint16_t type, const uint8_t *data, size_t len, const void *dst);
+extern int
+net_device_add_iface(struct net_device *dev, struct net_iface *iface);
+extern struct net_iface *
+net_device_get_iface(struct net_device *dev, int family);
 
 extern int
 net_protocol_register(uint16_t type, net_protocol_handler_t handler);
