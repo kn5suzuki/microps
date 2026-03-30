@@ -260,7 +260,7 @@ ip_build_packet(uint8_t protocol, const uint8_t *data, size_t len, uint16_t id, 
         return -1;
     }
     hdr = (struct ip_hdr *)buf;
-    hdr->vhl = (IP_VERSION_IPV4 << 4) | (hlen << 2);
+    hdr->vhl = (IP_VERSION_IPV4 << 4) | (hlen >> 2);
     hdr->tos = 0;
     hdr->total = hton16(total);
     hdr->id = hton16(id);
