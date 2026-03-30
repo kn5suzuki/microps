@@ -18,6 +18,10 @@
 #define IP_ADDR_LEN 4
 #define IP_ADDR_STR_LEN 16 /* "ddd.ddd.ddd.ddd\0"*/
 
+#define IP_PROTOCOL_ICMP 1
+#define IP_PROTOCOL_TCP 6
+#define IP_PROTOCOL_UDP 17
+
 typedef uint32_t ip_addr_t;
 
 struct ip_iface
@@ -43,6 +47,8 @@ struct ip_hdr
     ip_addr_t dst;
 };
 
+typedef void (*ip_protocol_handler_t)(const struct ip_hdr *iphdr, const uint8_t *data, size_t len, struct ip_iface *iface);
+
 extern const ip_addr_t IP_ADDR_ANY;
 extern const ip_addr_t IP_ADDR_BROADCAST;
 
@@ -56,6 +62,9 @@ ip_iface_alloc(const char *unicatst, const char *netmask);
 
 extern int
 ip_iface_register(struct net_device *dev, struct ip_iface *iface);
+
+extern int
+ip_protocol_register(uint8_t protocol, ip_protocol_handler_t handler);
 
 extern struct ip_iface *
 ip_iface_select(ip_addr_t addr);
