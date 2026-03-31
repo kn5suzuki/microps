@@ -291,7 +291,7 @@ ip_output_device(struct ip_iface *iface, const uint8_t *data, size_t len, ip_add
             return -1;
         }
     }
-    return net_device_output(NET_IFACE(iface)->dev, NTE_PROTOCOL_TYPE_IP, data, len, hwaddr);
+    return net_device_output(NET_IFACE(iface)->dev, NET_PROTOCOL_TYPE_IP, data, len, hwaddr);
 }
 
 ssize_t
@@ -374,7 +374,7 @@ ip_output(uint8_t protocol, const uint8_t *data, size_t len, ip_addr_t src, ip_a
 
 int ip_init(void)
 {
-    if (net_protocol_register(NTE_PROTOCOL_TYPE_IP, ip_input) == -1)
+    if (net_protocol_register(NET_PROTOCOL_TYPE_IP, ip_input) == -1)
     {
         errorf("net_protocol_register() failure");
         return -1;
