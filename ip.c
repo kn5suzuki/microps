@@ -343,7 +343,7 @@ ip_output(uint8_t protocol, const uint8_t *data, size_t len, ip_addr_t src, ip_a
     uint8_t buf[IP_TOTAL_SIZE_MAX];
 
     ip_addr_ntop(src, addr1, sizeof(addr1));
-    ip_addr_ntop(src, addr2, sizeof(addr2));
+    ip_addr_ntop(dst, addr2, sizeof(addr2));
     debugf("%s => %s, protocol=%d, len=%zu", addr1, addr2, protocol, len);
     if (src == IP_ADDR_ANY)
     {

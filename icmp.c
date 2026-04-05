@@ -122,7 +122,7 @@ icmp_input(const struct ip_hdr *iphdr, const uint8_t *data, size_t len, struct i
         return;
     }
 
-    debugf("%s => %s, len=%zu", ip_addr_ntop(iphdr->src, addr1, sizeof(addr1)), ip_addr_ntop(iphdr->src, addr2, sizeof(addr2)), len);
+    debugf("%s => %s, len=%zu", ip_addr_ntop(iphdr->src, addr1, sizeof(addr1)), ip_addr_ntop(iphdr->dst, addr2, sizeof(addr2)), len);
     icmp_print(data, len);
     hdr = (struct icmp_hdr *)data;
     switch (hdr->icmp_type)
