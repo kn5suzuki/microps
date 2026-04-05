@@ -144,8 +144,8 @@ int icmp_output(uint8_t type, uint8_t code, uint32_t val, const uint8_t *data, s
     uint8_t buf[ICMP_BUFSIZ];
     struct icmp_hdr *hdr;
     size_t msg_len;
-    char addr1[IP_ADDR_LEN];
-    char addr2[IP_ADDR_LEN];
+    char addr1[IP_ADDR_STR_LEN];
+    char addr2[IP_ADDR_STR_LEN];
 
     if (sizeof(buf) < sizeof(*hdr) + len)
     {
