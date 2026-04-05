@@ -19,11 +19,11 @@
 #define ETHER_PAYLOAD_SIZE_MAX (ETHER_FRAME_SIZE_MAX - ETHER_HDR_SIZE)
 
 /*
-* Ethernet types
-*/
-#define EHER_TYPE_IP 0x0800
-#define EHER_TYPE_ARP 0x0806
-#define EHER_TYPE_IPV6 0x86dd
+ * Ethernet types
+ */
+#define ETHER_TYPE_IP 0x0800
+#define ETHER_TYPE_ARP 0x0806
+#define ETHER_TYPE_IPV6 0x86dd
 
 struct ether_hdr
 {
