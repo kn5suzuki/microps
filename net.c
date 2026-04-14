@@ -290,8 +290,6 @@ net_softirq_handler(unsigned int irq, void *arg)
     }
 }
 
-#include "ip.h"
-
 int net_init(void)
 {
     infof("initialize...");
