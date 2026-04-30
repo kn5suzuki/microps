@@ -223,7 +223,7 @@ net_protocol_queue_push(struct net_protocol *proto, const uint8_t *data, size_t 
         return NULL;
     }
     debugf("success, proto=0x%04x queue.num=%d", proto->type, proto->queue.num);
-    lock_acquire(&proto->lock);
+    lock_release(&proto->lock);
     return entry;
 }
 
