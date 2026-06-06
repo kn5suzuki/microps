@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <errno.h>
 
 #include "platform.h"
 
@@ -349,6 +350,23 @@ tcp_output_segment(uint32_t seq, uint32_t ack, uint8_t flg, uint16_t wnd, const 
     return len;
 }
 
+static ssize_t
+tcp_output(struct tcp_pcb *pcb, uint8_t flg, const uint8_t *data, size_t len)
+{
+    uint32_t seq;
+
+    seq = pcb->snd.nxt;
+    if (TCP_FLAG_ISSET(flg, TCP_FLG_SYN))
+    {
+        seq = pcb->iss;
+    }
+    if (TCP_FLAG_ISSET(flg, TCP_FLG_SYN | TCP_FLG_FIN) || len)
+    {
+        /* code */
+    }
+    return tcp_output_segment(seq, pcb->rcv.nxt, flg, pcb->rcv.wnd, data, len, pcb->local, pcb->remote);
+}
+
 static void
 tcp_segment_arrives(struct seg_info *seg, uint8_t flags, const uint8_t *data, size_t len, ip_endp_t local, ip_endp_t remote)
 {
@@ -372,6 +390,94 @@ tcp_segment_arrives(struct seg_info *seg, uint8_t flags, const uint8_t *data, si
         }
         return;
     }
+    debugf("desc=%d, state=%s", tcp_pcb_desc(pcb), tcp_state_ntoa(pcb->state));
+    switch (pcb->state)
+    {
+    case TCP_STATE_LISTEN:
+        /* 1st check for an RST */
+        if (TCP_FLAG_ISSET(flags, TCP_FLG_RST))
+        {
+            return;
+        }
+        /* 2nd check for an ACK */
+        if (TCP_FLAG_ISSET(flags, TCP_FLG_ACK))
+        {
+            tcp_output_segment(seg->ack, 0, TCP_FLG_RST, 0, NULL, 0, local, remote);
+            return;
+        }
+        /* 3rd check for an SYN */
+        if (TCP_FLAG_ISSET(flags, TCP_FLG_SYN))
+        {
+            pcb->local = local;
+            pcb->remote = remote;
+            pcb->rcv.wnd = sizeof(pcb->buf);
+            pcb->rcv.nxt = seg->seq + 1;
+            pcb->irs = seg->seq;
+            pcb->iss = random();
+            tcp_output(pcb, TCP_FLG_SYN | TCP_FLG_ACK, NULL, 0);
+            pcb->snd.nxt = pcb->iss + 1;
+            pcb->snd.una = pcb->iss;
+            TCP_STATE_CHANGE(pcb, TCP_STATE_SYN_RECEIVED);
+            return;
+        }
+        /* 4th other text or control*/
+
+        /* drop segment */
+        return;
+    case TCP_STATE_SYN_SENT:
+        /* 1st check the ACK bit */
+
+        /* 2nd check the RST bit */
+
+        /* 3rd check security and precedence (ignore) */
+
+        /* 4th check the SYN bit */
+
+        /* 5th, if neither of the SYN or RST bits is set then drop the segment and return */
+
+        /* drop segment */
+        return;
+    }
+    /* OTherwise */
+
+    /* 1st check sequence number */
+
+    /* 2nd check the RST bit */
+
+    /* 3rd check security and precedence (ignore) */
+
+    /* 4th check the SYN bit */
+
+    /* 5th check the ACK bit */
+    if (!TCP_FLAG_ISSET(flags, TCP_FLG_ACK))
+    {
+        /* drop segment */
+        return;
+    }
+    switch (pcb->state)
+    {
+    case TCP_STATE_SYN_RECEIVED:
+        if (pcb->snd.una <= seg->ack && seg->ack <= pcb->snd.nxt)
+        {
+            TCP_STATE_CHANGE(pcb, TCP_STATE_ESTABLISHED);
+            sched_task_wakeup(&pcb->task);
+        }
+        else
+        {
+            tcp_output_segment(seg->ack, 0, TCP_FLG_RST, 0, NULL, 0, local, remote);
+            return;
+        }
+        break;
+
+    default:
+        break;
+    }
+    /* 6th check the URG bit (ignore) */
+
+    /* 7th process the segment text */
+
+    /* 8th check the FIN bit */
+    return;
 }
 
 static void tcp_input(const struct ip_hdr *iphdr, const uint8_t *data, size_t len, struct ip_iface *iface)
@@ -439,5 +545,107 @@ int tcp_init(void)
         errorf("ip_protocol_register() failure");
         return -1;
     }
+    return 0;
+}
+
+/*
+ * TCP User Command
+ */
+
+int tcp_cmd_open(ip_endp_t local, ip_endp_t remote, int active)
+{
+    struct tcp_pcb *pcb;
+    char ep1[IP_ENDP_STR_LEN];
+    char ep2[IP_ENDP_STR_LEN];
+    int state, desc;
+    struct ip_iface *iface;
+
+    lock_acquire(&lock);
+    pcb = tcp_pcb_alloc();
+    if (!pcb)
+    {
+        errorf("tcp_pcb_alloc() failure");
+        lock_release(&lock);
+        return -1;
+    }
+    debugf("mode=%s, local=%s, remote=%s", active ? "active" : "passive", ip_endp_ntop(local, ep1, sizeof(ep1)), ip_endp_ntop(remote, ep2, sizeof(ep2)));
+    if (active)
+    {
+        errorf("active open does not implement");
+        tcp_pcb_release(pcb);
+        lock_release(&lock);
+        return -1;
+    }
+    else
+    {
+        if (tcp_pcb_select(local, remote))
+        {
+            errorf("address already in use");
+            tcp_pcb_release(pcb);
+            lock_release(&lock);
+            return -1;
+        }
+        pcb->local = local;
+        pcb->remote = remote;
+        TCP_STATE_CHANGE(pcb, TCP_STATE_LISTEN);
+        debugf("waiting for connection...");
+    }
+AGAIN:
+    state = pcb->state;
+    while (pcb->state == state)
+    {
+        if (sched_task_sleep(&pcb->task, &lock, NULL) == -1)
+        {
+            debugf("interrupted");
+            TCP_STATE_CHANGE(pcb, TCP_STATE_CLOSED);
+            tcp_pcb_release(pcb);
+            lock_release(&lock);
+            errno = EINTR;
+            return -1;
+        }
+    }
+    if (pcb->state != TCP_STATE_ESTABLISHED)
+    {
+        if (pcb->state == TCP_STATE_SYN_RECEIVED)
+        {
+            goto AGAIN;
+        }
+        errorf("open error: state=%s (%d)", tcp_state_ntoa(pcb->state), pcb->state);
+        TCP_STATE_CHANGE(pcb, TCP_STATE_CLOSED);
+        tcp_pcb_release(pcb);
+        lock_release(&lock);
+        return -1;
+    }
+    iface = ip_route_get_iface(pcb->remote.addr);
+    if (!iface)
+    {
+        errorf("iface not found");
+        lock_release(&lock);
+        return -1;
+    }
+    pcb->mss = NET_IFACE(iface)->dev->mtu - (IP_HDR_SIZE_MIN + sizeof(struct tcp_hdr));
+    desc = tcp_pcb_desc(pcb);
+    debugf("success, local=%s, remote=%s", ip_endp_ntop(local, ep1, sizeof(ep1)), ip_endp_ntop(remote, ep2, sizeof(ep2)));
+    lock_release(&lock);
+    return desc;
+}
+
+int tcp_cmd_close(int desc)
+{
+    struct tcp_pcb *pcb;
+
+    lock_acquire(&lock);
+    pcb = tcp_pcb_get(desc);
+    if (!pcb)
+    {
+        errorf("pcb not found, desc=%d", desc);
+        lock_release(&lock);
+        return -1;
+    }
+    debugf("desc=%d", desc);
+    tcp_output(pcb, TCP_FLG_RST, NULL, 0);
+    TCP_STATE_CHANGE(pcb, TCP_STATE_CLOSED);
+    tcp_pcb_release(pcb);
+    lock_release(&lock);
     return 0;
 }
