@@ -45,6 +45,9 @@
         (x)->state = (y);                                                                              \
     } while (0);
 
+#define TCP_DEFAULT_RTO 200000  /* micro seconds */
+#define TCP_RETRANS_DEADLINE 12 /* seconds */
+
 struct pseudo_hdr
 {
     uint32_t src;
@@ -96,6 +99,18 @@ struct tcp_pcb
     uint16_t mss;
     uint8_t buf[65535];
     struct sched_task task;
+    struct queue queue; /* resransmit queue */
+};
+
+struct tcp_queue_entry
+{
+    struct queue_entry entry;
+    struct timeval first;
+    struct timeval last;
+    unsigned int rto; /* micro seconds */
+    uint32_t seq;
+    uint8_t flg;
+    size_t len;
 };
 
 struct seg_info
@@ -275,12 +290,25 @@ tcp_pcb_alloc(void)
 static void
 tcp_pcb_release(struct tcp_pcb *pcb)
 {
+    struct queue_entry *entry;
+
     if (sched_task_destroy(&pcb->task) != 0)
     {
         debugf("pending, desc=%d", tcp_pcb_desc(pcb));
         sched_task_wakeup(&pcb->task);
         return;
     }
+    while (1)
+    {
+        entry = queue_pop(&pcb->queue);
+        if (!entry)
+        {
+            break;
+        }
+        debugf("free queue entry");
+        memory_free(entry);
+    }
+
     memset(pcb, 0, sizeof(*pcb));
     debugf("success, desc=%d", tcp_pcb_desc(pcb));
 }
@@ -351,6 +379,97 @@ tcp_output_segment(uint32_t seq, uint32_t ack, uint8_t flg, uint16_t wnd, const 
     return len;
 }
 
+/*
+ * TCP Retransmit
+ *
+ * NOTE: TCP Retransmit functions must be called after locked
+ */
+
+static int
+tcp_retrans_queue_add(struct tcp_pcb *pcb, uint32_t seq, uint8_t flg, const uint8_t *data, size_t len)
+{
+    struct tcp_queue_entry *entry;
+
+    entry = memory_alloc(sizeof(*entry) + len);
+    if (!entry)
+    {
+        errorf("memory_alloc() failure");
+        return -1;
+    }
+    entry->rto = TCP_DEFAULT_RTO;
+    entry->seq = seq;
+    entry->flg = flg;
+    entry->len = len;
+    memcpy(entry + 1, data, entry->len);
+    gettimeofday(&entry->first, NULL);
+    entry->last = entry->first;
+    if (!queue_push(&pcb->queue, (struct queue_entry *)entry))
+    {
+        errorf("queue_push() failure");
+        memory_free(entry);
+        return -1;
+    }
+    debugf("desc=%d, num=%d, seq=%u", tcp_pcb_desc(pcb), pcb->queue.num, entry->seq);
+    return 0;
+}
+
+static void
+tcp_retrans_queue_cleanup(struct tcp_pcb *pcb)
+{
+    struct tcp_queue_entry *entry;
+    uint32_t consume;
+
+    while (1)
+    {
+        entry = (struct tcp_queue_entry *)queue_peek(&pcb->queue);
+        if (!entry)
+        {
+            break;
+        }
+        consume = entry->len;
+        if (TCP_FLAG_ISSET(entry->flg, TCP_FLG_SYN | TCP_FLG_FIN))
+        {
+            consume++;
+        }
+        if (pcb->snd.una < entry->seq + consume)
+        {
+            break;
+        }
+        entry = (struct tcp_queue_entry *)queue_pop(&pcb->queue);
+        debugf("desc=%d, num=%d, seq=%u", tcp_pcb_desc(pcb), pcb->queue.num, entry->seq);
+        memory_free(entry);
+    }
+}
+
+static void
+tcp_retrans_emit(void *arg, struct queue_entry *_entry)
+{
+    struct tcp_pcb *pcb;
+    struct tcp_queue_entry *entry;
+    struct timeval now, deadline, timeout;
+
+    pcb = (struct tcp_pcb *)arg;
+    entry = (struct tcp_queue_entry *)_entry;
+    gettimeofday(&now, NULL);
+    deadline = entry->first;
+    deadline.tv_sec += TCP_RETRANS_DEADLINE;
+    if (timercmp(&now, &deadline, >))
+    {
+        TCP_STATE_CHANGE(pcb, TCP_STATE_CLOSED)
+        sched_task_wakeup(&pcb->task);
+        return;
+    }
+    timeout = entry->last;
+    timeval_add_usec(&timeout, entry->rto);
+    if (timercmp(&now, &timeout, >))
+    {
+        debugf("desc=%d, seq=%u", tcp_pcb_desc(pcb), entry->seq);
+        tcp_output_segment(entry->seq, pcb->rcv.nxt, entry->flg, pcb->rcv.wnd, (uint8_t *)(entry + 1), entry->len, pcb->local, pcb->remote);
+        entry->last = now;
+        entry->rto *= 2;
+    }
+}
+
 static ssize_t
 tcp_output(struct tcp_pcb *pcb, uint8_t flg, const uint8_t *data, size_t len)
 {
@@ -363,7 +482,7 @@ tcp_output(struct tcp_pcb *pcb, uint8_t flg, const uint8_t *data, size_t len)
     }
     if (TCP_FLAG_ISSET(flg, TCP_FLG_SYN | TCP_FLG_FIN) || len)
     {
-        /* code */
+        tcp_retrans_queue_add(pcb, seq, flg, data, len);
     }
     return tcp_output_segment(seq, pcb->rcv.nxt, flg, pcb->rcv.wnd, data, len, pcb->local, pcb->remote);
 }
@@ -519,6 +638,7 @@ tcp_segment_arrives(struct seg_info *seg, uint8_t flags, const uint8_t *data, si
         if (pcb->snd.una < seg->ack && seg->ack <= pcb->snd.nxt)
         {
             pcb->snd.una = seg->ack;
+            tcp_retrans_queue_cleanup(pcb);
             if (pcb->snd.wl1 < seg->seq || (pcb->snd.wl1 == seg->seq && pcb->snd.wl2 <= seg->ack))
             {
                 pcb->snd.wnd = seg->wnd;
@@ -565,6 +685,23 @@ tcp_segment_arrives(struct seg_info *seg, uint8_t flags, const uint8_t *data, si
 
     /* 8th check the FIN bit */
     return;
+}
+
+static void
+tcp_timer(void)
+{
+    struct tcp_pcb *pcb;
+
+    lock_acquire(&lock);
+    for (pcb = pcbs; pcb < tailof(pcbs); pcb++)
+    {
+        if (pcb->state == TCP_STATE_NONE)
+        {
+            continue;
+        }
+        queue_foreach(&pcb->queue, tcp_retrans_emit, pcb);
+    }
+    lock_release(&lock);
 }
 
 static void tcp_input(const struct ip_hdr *iphdr, const uint8_t *data, size_t len, struct ip_iface *iface)
@@ -627,9 +764,16 @@ static void tcp_input(const struct ip_hdr *iphdr, const uint8_t *data, size_t le
 
 int tcp_init(void)
 {
+    struct timeval interval = {0, 100000}; /* 100ms */
+
     if (ip_protocol_register(IP_PROTOCOL_TCP, tcp_input) == -1)
     {
         errorf("ip_protocol_register() failure");
+        return -1;
+    }
+    if (timer_register(interval, tcp_timer) == -1)
+    {
+        errorf("net_timer_register() failure");
         return -1;
     }
     return 0;
